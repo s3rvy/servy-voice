@@ -50,7 +50,8 @@ def transcribe_audio(transcriber: Transcriber, language: str, transcription_queu
 
 def evaluate_audio(
         sampling_rate: SamplingRate,
-        window_size: int,
+        activation_window_size: int,
+        deactivation_window_size: int,
         activation_threshold: float,
         deactivation_threshold: float,
         transcription_queue: Queue[bytes],
@@ -60,7 +61,8 @@ def evaluate_audio(
     This function is intended to be run in a separate thread.
 
     :param sampling_rate: SamplingRate enum value (LOW or HIGH)
-    :param window_size: Number of audio chunks to consider for the evaluation window
+    :param activation_window_size: Size of the activation window in number of chunks
+    :param deactivation_window_size: Size of the deactivation window in number of chunks
     :param activation_threshold: Threshold for activating audio collection
     :param deactivation_threshold: Threshold for deactivating audio collection
     :param transcription_queue: Queue to put audio data for transcription
@@ -72,25 +74,28 @@ def evaluate_audio(
     collecting_audio: bool = False
     audio_to_transcribe: bytes = b''
 
-    confidence_window: numpy.array = numpy.zeros(window_size)
-    window_index: int = 0
-    windowed_audio_chunks: list[bytes] = [bytes() for _ in range(window_size)]
+    activation_confidence_window: numpy.array = numpy.zeros(activation_window_size)
+    deactivation_confidence_window: numpy.array = numpy.zeros(deactivation_window_size)
+    activation_window_index: int = 0
+    deactivation_window_index: int = 0
+    windowed_audio_chunks: list[bytes] = [bytes() for _ in range(activation_window_size)]
 
     for audio, confidence in recorder.start():
         if cancellation_event.is_set():
             break
-        confidence_window[window_index] = confidence
-        windowed_audio_chunks[window_index] = audio
+        activation_confidence_window[activation_window_index] = confidence
+        deactivation_confidence_window[deactivation_window_index] = confidence
+        windowed_audio_chunks[activation_window_index] = audio
 
-        current_confidence = confidence_window.mean()
+        current_confidence = activation_confidence_window.mean()
 
         if current_confidence > activation_threshold and not collecting_audio:
             print("Identified speech with {confidence} confidence. Start audio collection...".format(
                 confidence=current_confidence))
             collecting_audio = True
-            audio_to_transcribe = get_windowed_audio_chunks_in_order(windowed_audio_chunks, window_index)
+            audio_to_transcribe = get_windowed_audio_chunks_in_order(windowed_audio_chunks, activation_window_index)
 
-        if confidence_window.mean() < deactivation_threshold and collecting_audio:
+        if deactivation_confidence_window.mean() < deactivation_threshold and collecting_audio:
             print(
                 "Identified end of speech with confidence of {confidence}. Stop collection and queue for transcription...".format(
                     confidence=current_confidence))
@@ -101,7 +106,8 @@ def evaluate_audio(
         if collecting_audio:
             audio_to_transcribe += audio
 
-        window_index = (window_index + 1) % window_size
+        activation_window_index = (activation_window_index + 1) % activation_window_size
+        deactivation_window_index = (deactivation_window_index + 1) % deactivation_window_size
 
 if __name__ == "__main__":
     parser: configparser.ConfigParser = ConfigParser()
@@ -110,7 +116,8 @@ if __name__ == "__main__":
     queue: Queue = Queue(maxsize=0)
 
     rate: SamplingRate = SamplingRate.from_string(parser.get("AUDIO", "sampling_rate", fallback="HIGH"))
-    ws: int = calculate_window_size(rate, parser.getint("VOICE_ACTIVATION", "evaluation_window_ms"))
+    act_window_size: int = calculate_window_size(rate, parser.getint("VOICE_ACTIVATION", "activation_window_ms"))
+    deact_window_size: int = calculate_window_size(rate, parser.getint("VOICE_ACTIVATION", "deactivation_window_ms"))
     act_threshold: float = parser.getfloat("VOICE_ACTIVATION", "activation_threshold", fallback=0.9)
     deact_threshold: float = parser.getfloat("VOICE_ACTIVATION", "deactivation_threshold", fallback=0.2)
     num_transcriber_threads: int = parser.getint("TRANSCRIPTION", "number_of_transcriber_threads", fallback=1)
@@ -122,7 +129,7 @@ if __name__ == "__main__":
         number_of_threads=parser.getint("TRANSCRIPTION", "number_of_whisper_threads", fallback=1))
 
     stop_event: threading.Event = threading.Event()
-    producer = Thread(target=evaluate_audio, args=(rate, ws, act_threshold, deact_threshold, queue, stop_event))
+    producer = Thread(target=evaluate_audio, args=(rate, act_window_size, deact_window_size, act_threshold, deact_threshold, queue, stop_event))
     producer.start()
 
     threads = [producer]
