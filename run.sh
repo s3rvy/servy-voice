@@ -42,6 +42,14 @@ ensure_venv() {
     "${VENV_DIR}/bin/pip" install --upgrade pip
 }
 
+run() {
+    ensure_venv
+
+    "${VENV_DIR}/bin/pip" install -r ./src/requirements.txt
+
+    "${VENV_DIR}/bin/python" ./src/main.py
+}
+
 train_activation_model() {
     ensure_venv
 
@@ -118,9 +126,8 @@ print_help() {
 }
 
 case "$1" in
-    train_activation_model)
-        train_activation_model
-        ;;
+    train_activation_model) train_activation_model;;
+    run) run;;
     *)
         print_help
         exit 1

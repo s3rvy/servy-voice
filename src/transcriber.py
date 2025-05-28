@@ -10,12 +10,12 @@ class Transcriber:
         self.whisper = WhisperModel(
             model_name,
             device=device_type,
-            compute_type="int8",
+            compute_type="float16" if device_type != "cpu" else "int8",
             cpu_threads=number_of_threads,
             local_files_only=False)
         print("Transcriber initialized")
 
-    def transcribe(self, audio: bytes, language: str) -> str:
+    def transcribe(self, audio: bytes, language: str = None) -> str:
         """
         Transcribe the given audio bytes to text.
 
@@ -24,11 +24,7 @@ class Transcriber:
         :return: Transcribed text
         """
         audio_data_array: numpy.ndarray = audio_to_float(audio)
-        segments, _ = self.whisper.transcribe(audio_data_array,
-                                language=language,
-                                beam_size=5,
-                                vad_filter=True,
-                                vad_parameters=dict(min_silence_duration_ms=1000))
+        segments, _ = self.whisper.transcribe(audio_data_array, language=language, beam_size=5, vad_filter=False)
 
         segments = [s.text for s in segments]
         transcription = " ".join(segments)
