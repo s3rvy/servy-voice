@@ -3,7 +3,7 @@
 set -e
 VENV_DIR=".venv"
 
-ensure_venv() {
+ensure_clean_venv() {
     if [ ! -f ".python-version" ]; then
         echo ".python-version file not found. Please create one with the desired Python version."
         exit 1
@@ -25,16 +25,7 @@ ensure_venv() {
     fi
 
     if [ -d "$VENV_DIR" ]; then
-        # Use the venv's python to check version
-        ACTIVE_VERSION=$("$VENV_DIR/bin/python" -c "import platform; print(platform.python_version())")
-        if [[ "$ACTIVE_VERSION" == "$PYTHON_VERSION"* ]]; then
-            "${VENV_DIR}/bin/pip" install --upgrade pip
-            # Activate and return
-            return
-        else
-            echo "Existing venv Python version ($ACTIVE_VERSION) does not match required version ($PYTHON_VERSION). Recreating venv."
-            rm -rf "$VENV_DIR"
-        fi
+        rm -rf "$VENV_DIR"
     fi
 
     # Create new venv with correct python version
@@ -43,17 +34,31 @@ ensure_venv() {
 }
 
 run() {
-    ensure_venv
+    cd src
+    ensure_clean_venv
 
-    "${VENV_DIR}/bin/pip" install -r ./src/requirements.txt
+    "${VENV_DIR}/bin/pip" install -r ./requirements.txt
 
-    "${VENV_DIR}/bin/python" ./src/main.py
+    OPENWAKEWORD_PATH=$(find "./${VENV_DIR}/lib" -name openwakeword)
+    OPENWAKEWORD_MODEL_PATH="${OPENWAKEWORD_PATH}/resources/models"
+    mkdir -p "${OPENWAKEWORD_MODEL_PATH}"
+
+    echo $OPENWAKEWORD_PATH
+    echo $OPENWAKEWORD_MODEL_PATH
+
+    wget https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/embedding_model.onnx -O "${OPENWAKEWORD_MODEL_PATH}/embedding_model.onnx"
+    wget https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/embedding_model.tflite -O "${OPENWAKEWORD_MODEL_PATH}/embedding_model.tflite"
+    wget https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/melspectrogram.onnx -O "${OPENWAKEWORD_MODEL_PATH}//melspectrogram.onnx"
+    wget https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/melspectrogram.tflite -O "${OPENWAKEWORD_MODEL_PATH}//melspectrogram.tflite"
+
+    "${VENV_DIR}/bin/python" ./main.py
 }
 
 train_activation_model() {
-    ensure_venv
+    cd models/training
+    ensure_clean_venv
 
-    RESOURCE_PATH="./models/training/resources"
+    RESOURCE_PATH="./resources"
     PIPER_PATH="$RESOURCE_PATH/piper-sample-generator"
     OPENWAKEWORD_PATH="$RESOURCE_PATH/openwakeword"
     OPENWAKEWORD_MODEL_PATH="${OPENWAKEWORD_PATH}/openwakeword/resources/models"
@@ -62,11 +67,11 @@ train_activation_model() {
 
     echo "--------------------------------------- Setting up environment ---------------------------------------"
 
-    "${VENV_DIR}/bin/pip" install -r ./models/training/requirements.txt
+    "${VENV_DIR}/bin/pip" install -r ./requirements.txt
 
     if [ ! -x "$RESOURCE_PATH" ]; then
-        mkdir ./models/training/resources
-        mkdir ./models/training/resources/data
+        mkdir ./resources
+        mkdir ./resources/data
     fi
 
     if [ ! -x "$PIPER_PATH" ]; then
@@ -98,22 +103,22 @@ train_activation_model() {
         wget -O "${OTHER_MODELS_PATH}/false_positive_data.npy" https://huggingface.co/datasets/davidscripka/openwakeword_features/resolve/main/validation_set_features.npy
     fi
 
-    "${VENV_DIR}/bin/python" ./models/training/modify_code.py
+    "${VENV_DIR}/bin/python" ./modify_code.py
 
     echo "--------------------------------------- Setting up training data ---------------------------------------"
 
     # generate training data from datasets
-    "${VENV_DIR}/bin/python" ./models/training/generate_training_data.py
+    "${VENV_DIR}/bin/python" ./generate_training_data.py
 
-    cd ./models/training/resources
+    cd ./resources
     # generate synthetic training data
-    "../../../${VENV_DIR}/bin/python" ./openwakeword/openwakeword/train.py --training_config ../servy_model.yml --generate_clips
-    "../../../${VENV_DIR}/bin/python" ./openwakeword/openwakeword/train.py --training_config ../servy_model.yml --augment_clips
+    "../${VENV_DIR}/bin/python" ./openwakeword/openwakeword/train.py --training_config ../servy_model.yml --generate_clips
+    "../${VENV_DIR}/bin/python" ./openwakeword/openwakeword/train.py --training_config ../servy_model.yml --augment_clips
 
     echo "--------------------------------------- Train model ---------------------------------------"
 
     # train model
-    "../../../${VENV_DIR}/bin/python" ./openwakeword/openwakeword/train.py --training_config ../servy_model.yml --train_model
+    "../${VENV_DIR}/bin/python" ./openwakeword/openwakeword/train.py --training_config ../servy_model.yml --train_model
 
 #    rm -rf ./models/training/resources
 }

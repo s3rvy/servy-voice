@@ -16,7 +16,7 @@ custom_negative_phrases: []
 n_samples: 100000
 
 # The total number of positive samples to generate for validation and early stopping of model training
-n_samples_val: 5000
+n_samples_val: 2000
 
 # The batch size to use with Piper TTS when generating synthetic training data
 tts_batch_size: 50
@@ -78,7 +78,7 @@ feature_data_files:
 # that batch sizes of 1024-4096 work well in practice.
 
 batch_n_per_class:
-  "ACAV100M_sample": 1024
+  "ACAV100M_sample": 2048
   "adversarial_negative": 50
   "positive": 50
 
@@ -98,5 +98,5 @@ steps: 50000
 
 # The maximum negative weight and target false positives per hour, used to control the auto training process
 # The target false positive rate may not be achieved, and adjusting the maximum negative weight may be necessary
-max_negative_weight: 1500
+max_negative_weight: 1900
 target_false_positives_per_hour: 0.2

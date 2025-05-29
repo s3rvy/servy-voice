@@ -4,12 +4,18 @@ from configparser import ConfigParser
 from queue import Queue, Empty
 from threading import Thread
 
+from utils import audio_to_float
 from transcriber import Transcriber
 from speech_detector import SamplingRate, SpeechDetector
+import openwakeword
+import json
 
 def process_speech(
         transcriber: Transcriber,
-        speech_audio_to_process_queue: Queue[bytes],
+        activation_detection_model: openwakeword.Model,
+        activation_detection_queue: Queue[bytes],
+        command_transcription_queue: Queue[bytes],
+        activation_detected_event: threading.Event,
         cancellation_event: threading.Event) -> None:
     """
     Function to process spoken word audio from the queue. First checks if the audio contains the activation word,
@@ -18,22 +24,51 @@ def process_speech(
     This function is intended to be run in a separate thread.
 
     :param transcriber: Transcriber instance to perform the transcription
-    :param speech_audio_to_process_queue: Queue containing live speech audio data to be processed
+    :param activation_detection_model: OpenWakeWord model to detect the activation word
+    :param activation_detection_queue: Queue to get live speech audio data for detection of the activation word
+    :param command_transcription_queue: Queue to put audio data to be transcribed as commands for the AI assistant
+    :param activation_detected_event: Event to signal that the activation word has been detected
     :param cancellation_event: Event to signal cancellation of the transcription process
     """
     while not cancellation_event.is_set():
         try:
-            audio: bytes = speech_audio_to_process_queue.get(timeout=1)
+            if not activation_detected_event.is_set():
+                audio: bytes = activation_detection_queue.get(timeout=1)
+                print(f"Processing activation detection audio... (activation_detected_event={activation_detected_event.is_set()})")
+                prediction: dict[str, float] = activation_detection_model.predict(audio_to_float(audio))
+                print(prediction.get("hey_servy"))
+                is_activation_word: bool = prediction.get("hey_servy") > 0.5
+                if is_activation_word and not activation_detected_event.is_set():
+                    switch_from_detection_to_transcription(activation_detection_queue, activation_detected_event)
+                    continue
+            else:
+                audio: bytes = command_transcription_queue.get(timeout=1)
+                print("Processing command audio...")
+                servy_command: str = transcriber.transcribe(audio)
+                print(f"Got command: {servy_command}")
+                activation_detected_event.clear()
         except Empty:
             continue
 
-        transcribed_audio: str = transcriber.transcribe(audio)
-        print(transcribed_audio)
+def switch_from_detection_to_transcription(activation_detection_queue: Queue[bytes], activation_detected_event: threading.Event) -> None:
+    """
+    Switches from activation detection to command transcription by setting the activation_detected_event
+    and clearing the activation detection queue.
+
+    :param activation_detection_queue: Queue to clear the activation detection audio data
+    """
+    print("Activation word detected! Set activation_detected_event and clear activation detection queue.")
+    activation_detected_event.set()
+    with activation_detection_queue.mutex:
+        activation_detection_queue.queue.clear()
+        activation_detection_queue.unfinished_tasks = 0
 
 def collect_speech(
         config_parser: ConfigParser,
-        speech_audio_to_process_queue: Queue[bytes],
         speech_detector: SpeechDetector,
+        activation_detection_queue: Queue[bytes],
+        command_transcription_queue: Queue[bytes],
+        activation_detected_event: threading.Event,
         cancellation_event: threading.Event) -> None:
     """
     Function to retrieve audio from the microphone using the VADRecorder, evaluate if there is speech,
@@ -42,9 +77,11 @@ def collect_speech(
     This function is intended to be run in a separate thread.
 
     :param config_parser: ConfigParser instance containing configuration settings
-    :param speech_audio_to_process_queue: Queue to put live speech audio data for processing
     :param speech_detector: SpeechDetector instance to detect speech in audio feed
-    :param cancellation_event: Event to signal cancellation of the recording process
+    :param activation_detection_queue: Queue to put live speech audio data for processing
+    :param command_transcription_queue: Queue to put audio data to be transcribed as commands for the AI assistant
+    :param cancellation_event: Event to signal cancellation of the detection process
+    :param activation_detected_event: Event to signal that the activation word has been detected
     """
     sampling_rate: SamplingRate = SamplingRate.from_string(config_parser.get("AUDIO", "sampling_rate", fallback="HIGH"))
     activation_window_ms: int = config_parser.getint("VOICE_ACTIVATION", "activation_window_ms")
@@ -63,35 +100,54 @@ def collect_speech(
             channels=channels):
         if cancellation_event.is_set():
             break
-        speech_audio_to_process_queue.put(speech_chunk)
+        elif activation_detected_event.is_set() and not command_transcription_queue.full():
+            print(f"Activation detected and command not yet received -> putting chunk into command transcription queue")
+            command_transcription_queue.put(speech_chunk)
+            continue
+        elif not activation_detected_event.is_set():
+            activation_detection_queue.put(speech_chunk)
+        
+def join_all(threads_to_join: list[Thread]) -> None:
+    """
+    Joins all threads in the provided list.
+
+    :param threads_to_join: List of threads to join
+    """
+    for thread in threads_to_join:
+        thread.join()
 
 if __name__ == "__main__":
     parser: configparser.ConfigParser = ConfigParser()
     parser.read("config.ini")
 
-    queue: Queue = Queue(maxsize=0)
-    stop_event: threading.Event = threading.Event()
-
-    producer = Thread(target=collect_speech, args=(parser, queue, SpeechDetector(), stop_event))
-    producer.start()
-    threads = [producer]
+    vad_queue: Queue = Queue(maxsize=0)
+    command_queue: Queue = Queue(maxsize=1)
+    exit_application_event: threading.Event = threading.Event()
+    activation_event: threading.Event = threading.Event()
 
     audio_transcriber: Transcriber = Transcriber(
         model_name=parser.get("TRANSCRIPTION", "model_name", fallback="tiny"),
         device_type=parser.get("TRANSCRIPTION", "device_type", fallback="cpu"),
         number_of_threads=parser.getint("TRANSCRIPTION", "number_of_whisper_threads", fallback=1))
+    model_path: list[str] = json.loads(parser.get("VOICE_ACTIVATION","models_path"))
+    print(model_path)
+    wake_word_model: openwakeword.Model = openwakeword.Model(
+        wakeword_models=model_path)
+
+    producer = Thread(target=collect_speech, args=(parser, SpeechDetector(), vad_queue, command_queue, activation_event, exit_application_event))
+    producer.start()
+    threads = [producer]
 
     num_transcriber_threads: int = parser.getint("TRANSCRIPTION", "number_of_transcriber_threads", fallback=1)
     for _ in range(num_transcriber_threads):
-        transcriber_thread = Thread(target=process_speech, args=(audio_transcriber, queue, stop_event))
+        transcriber_thread = Thread(target=process_speech, args=(audio_transcriber, wake_word_model, vad_queue, command_queue, activation_event, exit_application_event))
         threads.append(transcriber_thread)
         transcriber_thread.start()
 
     try:
-        for thread in threads:
-            thread.join()
+        join_all(threads)
     except (SystemExit, KeyboardInterrupt) as e:
         print("Exiting...")
-        stop_event.set()
-        for thread in threads:
-            thread.join()
+        exit_application_event.set()
+        join_all(threads)
+            

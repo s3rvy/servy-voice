@@ -15,9 +15,9 @@ import wget
 import tarfile
 import shutil
 
-MIT_RIRS_PATH: str = "./models/training/resources/data/mit_rirs"
-AUDIOSET_PATH: str = "./models/training/resources/data/audioset"
-FREE_MUSIC_ARCHIVE_PATH: str = "./models/training/resources/data/free_music_archive"
+MIT_RIRS_PATH: str = "./resources/data/mit_rirs"
+AUDIOSET_PATH: str = "./resources/data/audioset"
+FREE_MUSIC_ARCHIVE_PATH: str = "./resources/data/free_music_archive"
 
 def download_room_impules_responses() -> None:
     """
