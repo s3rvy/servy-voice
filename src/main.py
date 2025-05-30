@@ -1,18 +1,18 @@
 import configparser
+import json
 import threading
 from configparser import ConfigParser
 from queue import Queue, Empty
 from threading import Thread
 
-from utils import audio_to_float
-from transcriber import Transcriber
+from activation_word_detector import ActivationWordDetector
 from speech_detector import SamplingRate, SpeechDetector
-import openwakeword
-import json
+from transcriber import Transcriber
+
 
 def process_speech(
         transcriber: Transcriber,
-        activation_detection_model: openwakeword.Model,
+        activation_word_detector: ActivationWordDetector,
         activation_detection_queue: Queue[bytes],
         command_transcription_queue: Queue[bytes],
         activation_detected_event: threading.Event,
@@ -24,7 +24,7 @@ def process_speech(
     This function is intended to be run in a separate thread.
 
     :param transcriber: Transcriber instance to perform the transcription
-    :param activation_detection_model: OpenWakeWord model to detect the activation word
+    :param activation_word_detector: Detector to detect the activation word in a given audio sample
     :param activation_detection_queue: Queue to get live speech audio data for detection of the activation word
     :param command_transcription_queue: Queue to put audio data to be transcribed as commands for the AI assistant
     :param activation_detected_event: Event to signal that the activation word has been detected
@@ -34,10 +34,9 @@ def process_speech(
         try:
             if not activation_detected_event.is_set():
                 audio: bytes = activation_detection_queue.get(timeout=1)
-                print(f"Processing activation detection audio... (activation_detected_event={activation_detected_event.is_set()})")
-                prediction: dict[str, float] = activation_detection_model.predict(audio_to_float(audio))
-                print(prediction.get("hey_servy"))
-                is_activation_word: bool = prediction.get("hey_servy") > 0.5
+                print(
+                    f"Processing activation detection audio... (activation_detected_event={activation_detected_event.is_set()})")
+                is_activation_word: bool = activation_word_detector.contains_activation_word(audio)
                 if is_activation_word and not activation_detected_event.is_set():
                     switch_from_detection_to_transcription(activation_detection_queue, activation_detected_event)
                     continue
@@ -129,10 +128,10 @@ if __name__ == "__main__":
         model_name=parser.get("TRANSCRIPTION", "model_name", fallback="tiny"),
         device_type=parser.get("TRANSCRIPTION", "device_type", fallback="cpu"),
         number_of_threads=parser.getint("TRANSCRIPTION", "number_of_whisper_threads", fallback=1))
-    model_path: list[str] = json.loads(parser.get("VOICE_ACTIVATION","models_path"))
-    print(model_path)
-    wake_word_model: openwakeword.Model = openwakeword.Model(
-        wakeword_models=model_path)
+    model_paths: list[str] = json.loads(parser.get("VOICE_ACTIVATION", "model_paths"))
+    activation_detector: ActivationWordDetector = ActivationWordDetector(
+        model_paths=model_paths,
+        activation_word_confidence_threshold=parser.getfloat("VOICE_ACTIVATION", "activation_word_confidence_threshold", fallback=0.5))
 
     producer = Thread(target=collect_speech, args=(parser, SpeechDetector(), vad_queue, command_queue, activation_event, exit_application_event))
     producer.start()
@@ -140,7 +139,7 @@ if __name__ == "__main__":
 
     num_transcriber_threads: int = parser.getint("TRANSCRIPTION", "number_of_transcriber_threads", fallback=1)
     for _ in range(num_transcriber_threads):
-        transcriber_thread = Thread(target=process_speech, args=(audio_transcriber, wake_word_model, vad_queue, command_queue, activation_event, exit_application_event))
+        transcriber_thread = Thread(target=process_speech, args=(audio_transcriber, activation_detector, vad_queue, command_queue, activation_event, exit_application_event))
         threads.append(transcriber_thread)
         transcriber_thread.start()
 

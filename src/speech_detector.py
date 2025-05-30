@@ -10,6 +10,7 @@ from silero_vad.utils_vad import OnnxWrapper
 
 from utils import audio_to_float
 
+
 class SamplingRate(Enum):
     LOW = 8000
     HIGH = 16000
