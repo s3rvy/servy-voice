@@ -1,9 +1,11 @@
 import numpy
 import openwakeword
+from openwakeword import Model
+
 
 class ActivationWordDetector:
-    def __init__(self, model_paths: list[str], activation_word_confidence_threshold: float = 0.5):
-        self.model: openwakeword.Model = openwakeword.Model(wakeword_models=model_paths)
+    def __init__(self, model: Model, activation_word_confidence_threshold: float = 0.5):
+        self.model: Model = model
         self.activation_word_confidence_threshold: float = activation_word_confidence_threshold
 
     def contains_activation_word(self, audio: bytes) -> bool:

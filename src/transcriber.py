@@ -5,15 +5,13 @@ from utils import audio_to_float
 
 
 class Transcriber:
-    def __init__(self, model_name: str, device_type: str, number_of_threads: int):
-        print("Initializing Transcriber...")
-        self.whisper = WhisperModel(
-            model_name,
-            device=device_type,
-            compute_type="float16" if device_type != "cpu" else "int8",
-            cpu_threads=number_of_threads,
-            local_files_only=False)
-        print("Transcriber initialized")
+    def __init__(self, whisper_model: WhisperModel) -> None:
+        """
+        Initialize the Transcriber with a WhisperModel instance.
+
+        :param whisper_model: An instance of WhisperModel from the faster_whisper package
+        """
+        self.whisper = whisper_model
 
     def transcribe(self, audio: bytes, language: str = None) -> str:
         """
