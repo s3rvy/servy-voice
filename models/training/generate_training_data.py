@@ -1,19 +1,14 @@
 import os
-from typing import Mapping, MutableMapping
-
-import numpy as np
-import torch
-import sys
+import shutil
+import tarfile
 from pathlib import Path
-import uuid
-import yaml
+
 import datasets
+import numpy as np
 import scipy
+import wget
 from datasets import IterableDataset, Dataset
 from tqdm import tqdm
-import wget
-import tarfile
-import shutil
 
 MIT_RIRS_PATH: str = "./resources/data/mit_rirs"
 AUDIOSET_PATH: str = "./resources/data/audioset"

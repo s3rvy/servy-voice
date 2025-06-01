@@ -1,4 +1,0 @@
-pyaudio
-silero-vad
-faster_whisper
-openwakeword

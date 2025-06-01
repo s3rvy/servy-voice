@@ -1,3 +1,4 @@
+import logging
 import threading
 from enum import Enum
 from typing import Any, Generator
@@ -9,6 +10,7 @@ from silero_vad.utils_vad import OnnxWrapper
 
 from utils import audio_to_float
 
+LOGGER: logging.Logger = logging.getLogger(__name__)
 
 class SamplingRate(Enum):
     LOW = 8000
@@ -57,14 +59,14 @@ class SpeechDetector:
         :param deactivation_threshold: Threshold for deactivating speech detection
         :param channels: Number of audio channels (1 for mono, 2 for stereo)
         """
-        self.vad_model: OnnxWrapper = vad_model
-        self.audio_processor = audio_processor
-        self.sampling_rate: SamplingRate = sampling_rate
-        self.activation_window_size: int = _calculate_window_size(self.sampling_rate, activation_window_ms)
-        self.deactivation_window_size: int = _calculate_window_size(self.sampling_rate, deactivation_window_ms)
-        self.activation_threshold: float = activation_threshold
-        self.deactivation_threshold: float = deactivation_threshold
-        self.channels: int = channels
+        self._vad_model: OnnxWrapper = vad_model
+        self._audio_processor = audio_processor
+        self._sampling_rate: SamplingRate = sampling_rate
+        self._activation_window_size: int = _calculate_window_size(self._sampling_rate, activation_window_ms)
+        self._deactivation_window_size: int = _calculate_window_size(self._sampling_rate, deactivation_window_ms)
+        self._activation_threshold: float = activation_threshold
+        self._deactivation_threshold: float = deactivation_threshold
+        self._channels: int = channels
 
     def start_collection(
             self,
@@ -80,55 +82,52 @@ class SpeechDetector:
 
         :yield: A chunk of audio data (bytes) which has been detected as speech.
         """
-        audio_stream: pyaudio.Stream = self.audio_processor.open(
+        audio_stream: pyaudio.Stream = self._audio_processor.open(
             format=pyaudio.paInt16,
-            channels=self.channels,
-            rate=self.sampling_rate.value,
+            channels=self._channels,
+            rate=self._sampling_rate.value,
             input=True)
         collecting_audio: bool = False
         audio_to_transcribe: bytes = b''
 
-        activation_confidence_window: numpy.array = numpy.zeros(self.activation_window_size)
-        deactivation_confidence_window: numpy.array = numpy.zeros(self.deactivation_window_size)
+        activation_confidence_window: numpy.array = numpy.zeros(self._activation_window_size)
+        deactivation_confidence_window: numpy.array = numpy.zeros(self._deactivation_window_size)
         activation_window_index: int = 0
         deactivation_window_index: int = 0
-        windowed_audio_chunks: list[bytes] = [bytes() for _ in range(self.activation_window_size)]
+        windowed_audio_chunks: list[bytes] = [bytes() for _ in range(self._activation_window_size)]
 
-        while True:
-            if cancellation_event.is_set():
-                break
-
-            audio_chunk: pyaudio.paInt16 = audio_stream.read(self.sampling_rate.get_chunk_size(), exception_on_overflow=False)
+        while not cancellation_event.is_set():
+            audio_chunk: pyaudio.paInt16 = audio_stream.read(self._sampling_rate.get_chunk_size(), exception_on_overflow=False)
             audio_data_array: numpy.ndarray = audio_to_float(audio_chunk)
 
-            confidence: float = self.vad_model(torch.from_numpy(audio_data_array), self.sampling_rate.value).item()
+            confidence: float = self._vad_model(torch.from_numpy(audio_data_array), self._sampling_rate.value).item()
 
             activation_confidence_window[activation_window_index] = confidence
             deactivation_confidence_window[deactivation_window_index] = confidence
             windowed_audio_chunks[activation_window_index] = audio_chunk
 
+            activation_window_index = (activation_window_index + 1) % self._activation_window_size
+            deactivation_window_index = (deactivation_window_index + 1) % self._deactivation_window_size
+
             current_confidence = activation_confidence_window.mean()
 
-            if current_confidence > self.activation_threshold and not collecting_audio:
-                print("Identified speech with {confidence} confidence. Start audio collection...".format(
+            if collecting_audio:
+                audio_to_transcribe += audio_chunk
+
+            if current_confidence > self._activation_threshold and not collecting_audio:
+                LOGGER.info("Identified speech with {confidence} confidence. Start audio collection...".format(
                     confidence=current_confidence))
                 collecting_audio = True
                 audio_to_transcribe = _get_windowed_audio_chunks_in_order(windowed_audio_chunks,
                                                                           activation_window_index)
 
-            if deactivation_confidence_window.mean() < self.deactivation_threshold and collecting_audio:
-                print(
+            if deactivation_confidence_window.mean() < self._deactivation_threshold and collecting_audio:
+                LOGGER.info(
                     "Identified end of speech with confidence of {confidence}. Stop collection and queue for transcription...".format(
                         confidence=current_confidence))
                 yield audio_to_transcribe
                 audio_to_transcribe = b''
                 collecting_audio = False
-
-            if collecting_audio:
-                audio_to_transcribe += audio_chunk
-
-            activation_window_index = (activation_window_index + 1) % self.activation_window_size
-            deactivation_window_index = (deactivation_window_index + 1) % self.deactivation_window_size
 
 def _get_windowed_audio_chunks_in_order(audio_chunks: list[bytes], starting_index: int) -> bytes:
     """

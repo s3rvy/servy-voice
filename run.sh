@@ -3,18 +3,37 @@
 set -e
 VENV_DIR=".venv"
 
+get_venv_python_version() {
+    if [ -d "$VENV_DIR" ]; then
+        "$VENV_DIR/bin/python" --version 2>&1 | awk '{print $2}'
+    fi
+}
+
 ensure_clean_venv() {
     if [ ! -f ".python-version" ]; then
         echo ".python-version file not found. Please create one with the desired Python version."
         exit 1
     fi
 
-    PYTHON_VERSION=$(pyenv version | awk '{print $1}' | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?')
-    echo $PYTHON_VERSION
-
     if ! command -v pyenv >/dev/null 2>&1; then
         echo "pyenv is not installed. Please install pyenv first."
         exit 1
+    fi
+
+    PYTHON_VERSION=$(pyenv version | awk '{print $1}' | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?')
+    VENV_PYTHON_VERSION=$(get_venv_python_version)
+
+    REMOVE_VENV=false
+    if [ ! -d "$VENV_DIR" ]; then
+        REMOVE_VENV=true
+    elif [ "$PYTHON_VERSION" != "$VENV_PYTHON_VERSION" ]; then
+        REMOVE_VENV=true
+    elif [ "${CLEANUP_EXISTING_ENVIROMENT}" = "true" ]; then
+        REMOVE_VENV=true
+    fi
+
+    if [ "$REMOVE_VENV" = true ]; then
+        rm -rf "$VENV_DIR"
     fi
 
     # Find the correct python executable from pyenv
@@ -24,17 +43,13 @@ ensure_clean_venv() {
         pyenv install -s "$PYTHON_VERSION"
     fi
 
-    if [ -d "$VENV_DIR" ]; then
-        rm -rf "$VENV_DIR"
+    if [ ! -d "$VENV_DIR" ]; then
+        "$PYENV_PYTHON" -m venv "$VENV_DIR"
+        "${VENV_DIR}/bin/pip" install --upgrade pip
     fi
-
-    # Create new venv with correct python version
-    "$PYENV_PYTHON" -m venv "$VENV_DIR"
-    "${VENV_DIR}/bin/pip" install --upgrade pip
 }
 
 run() {
-    cd src
     ensure_clean_venv
 
     "${VENV_DIR}/bin/pip" install -r ./requirements.txt
@@ -48,10 +63,16 @@ run() {
 
     wget https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/embedding_model.onnx -O "${OPENWAKEWORD_MODEL_PATH}/embedding_model.onnx"
     wget https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/embedding_model.tflite -O "${OPENWAKEWORD_MODEL_PATH}/embedding_model.tflite"
-    wget https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/melspectrogram.onnx -O "${OPENWAKEWORD_MODEL_PATH}//melspectrogram.onnx"
-    wget https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/melspectrogram.tflite -O "${OPENWAKEWORD_MODEL_PATH}//melspectrogram.tflite"
+    wget https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/melspectrogram.onnx -O "${OPENWAKEWORD_MODEL_PATH}/melspectrogram.onnx"
+    wget https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/melspectrogram.tflite -O "${OPENWAKEWORD_MODEL_PATH}/melspectrogram.tflite"
 
     "${VENV_DIR}/bin/python" ./main.py
+}
+
+test() {
+    ensure_clean_venv
+    "${VENV_DIR}/bin/pip" install -r ./requirements.txt
+    "${VENV_DIR}/bin/python" -m unittest discover -s test
 }
 
 train_activation_model() {
@@ -89,17 +110,13 @@ train_activation_model() {
 
         wget https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/embedding_model.onnx -O "${OPENWAKEWORD_MODEL_PATH}/embedding_model.onnx"
         wget https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/embedding_model.tflite -O "${OPENWAKEWORD_MODEL_PATH}/embedding_model.tflite"
-        wget https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/melspectrogram.onnx -O "${OPENWAKEWORD_MODEL_PATH}//melspectrogram.onnx"
-        wget https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/melspectrogram.tflite -O "${OPENWAKEWORD_MODEL_PATH}//melspectrogram.tflite"
+        wget https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/melspectrogram.onnx -O "${OPENWAKEWORD_MODEL_PATH}/melspectrogram.onnx"
+        wget https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/melspectrogram.tflite -O "${OPENWAKEWORD_MODEL_PATH}/melspectrogram.tflite"
     fi
 
     if [ ! -x "${OTHER_MODELS_PATH}" ]; then
         mkdir -p "${OTHER_MODELS_PATH}"
-        # training set (~2,000 hours from the ACAV100M Dataset)
-        # See https://huggingface.co/datasets/davidscripka/openwakeword_features for more information
         wget -O "${OTHER_MODELS_PATH}/feature_data.npy" https://huggingface.co/datasets/davidscripka/openwakeword_features/resolve/main/openwakeword_features_ACAV100M_2000_hrs_16bit.npy
-
-        # validation set for false positive rate estimation (~11 hours)
         wget -O "${OTHER_MODELS_PATH}/false_positive_data.npy" https://huggingface.co/datasets/davidscripka/openwakeword_features/resolve/main/validation_set_features.npy
     fi
 
@@ -107,32 +124,30 @@ train_activation_model() {
 
     echo "--------------------------------------- Setting up training data ---------------------------------------"
 
-    # generate training data from datasets
     "${VENV_DIR}/bin/python" ./generate_training_data.py
 
     cd ./resources
-    # generate synthetic training data
     "../${VENV_DIR}/bin/python" ./openwakeword/openwakeword/train.py --training_config ../servy_model.yml --generate_clips
     "../${VENV_DIR}/bin/python" ./openwakeword/openwakeword/train.py --training_config ../servy_model.yml --augment_clips
 
     echo "--------------------------------------- Train model ---------------------------------------"
 
-    # train model
     "../${VENV_DIR}/bin/python" ./openwakeword/openwakeword/train.py --training_config ../servy_model.yml --train_model
-
-#    rm -rf ./models/training/resources
 }
 
 print_help() {
     echo "Usage: $0 <command>"
     echo ""
     echo "Available commands:"
-    echo "  train_activation_model   Set up environment and train a custom OpenWakeWord activation model"
+    echo "  run                    Set up environment and run main.py"
+    echo "  test                   Set up environment and run all tests in the test folder"
+    echo "  train_activation_model Set up environment and train a custom OpenWakeWord activation model"
 }
 
 case "$1" in
     train_activation_model) train_activation_model;;
     run) run;;
+    test) test;;
     *)
         print_help
         exit 1

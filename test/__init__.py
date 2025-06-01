@@ -1,0 +1,1 @@
+__all__=["test_activation_word_detector", "test_processing", "test_speech_detector", "test_transcriber", "test_utils"]
